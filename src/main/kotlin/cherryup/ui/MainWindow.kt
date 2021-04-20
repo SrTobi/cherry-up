@@ -1,23 +1,38 @@
 package cherryup.ui
 
-import cherryup.BranchFlow
+import cherryup.BranchTransition
 import cherryup.Config
 import java.awt.*
+import java.awt.EventQueue.isDispatchThread
 import java.lang.Exception
 import javax.swing.*
 import javax.swing.SwingUtilities.invokeLater
 import kotlin.concurrent.thread
 
 class MainWindow(config: Config,
-                 private val createModel: (String, List<BranchFlow>) -> UiModel?): JFrame() {
+                 private val createModel: (String, List<BranchTransition>) -> UiModel?): JFrame() {
     private val pathInput: JTextField = JTextField(config.startDir)
     private val branchFlowInput: JTextField = JTextField(config.branchFlow)
     private val output: JList<Step> = JList()
     private val errorOutput: JLabel = JLabel("")
-    private val updateButton: JButton = JButton("Update")
+    private val updateAndAbortButton: JButton = JButton("Update")
     private val nextStepButton: JButton = JButton("Run")
 
     private var model: UiModel? = null
+        set(value) {
+            field = value
+            updateButtons()
+        }
+    private var running: Boolean = false
+        set(value) {
+            field = value
+            updateButtons()
+        }
+    private var done: Boolean = false
+        set(value) {
+            field = value
+            updateButtons()
+        }
 
     init {
         createUI()
@@ -27,6 +42,7 @@ class MainWindow(config: Config,
     private fun instantiateModel(startDir: String = pathInput.text,
                                  branchFlowString: String = branchFlowInput.text,
                                  showErrors: Boolean = true) {
+        assert(isDispatchThread())
         Config.save(Config(startDir, branchFlowString))
 
         val oldModel = model
@@ -34,8 +50,7 @@ class MainWindow(config: Config,
             oldModel.close()
             oldModel.update = { }
         }
-        errorOutput.isVisible = false
-        nextStepButton.isEnabled = false
+        done = false
         model = null
         output.model = DefaultListModel()
 
@@ -63,7 +78,6 @@ class MainWindow(config: Config,
                 }
             }
             model = newModel
-            nextStepButton.isEnabled = true
             newModel.update()
         }
     }
@@ -73,12 +87,12 @@ class MainWindow(config: Config,
         super.dispose()
     }
 
-    private fun parseBranchFlow(value: String): List<BranchFlow> {
+    private fun parseBranchFlow(value: String): List<BranchTransition> {
         return value
             .split("->")
             .map { it.trim() }
             .windowed(2)
-            .map { BranchFlow(it[0], it[1]) }
+            .map { BranchTransition(it[0], it[1]) }
     }
 
     private fun updateFromModel() {
@@ -89,24 +103,47 @@ class MainWindow(config: Config,
         if (listModel != output.model) {
             output.model = listModel
         }
+        repaint()
     }
 
-    private fun proceed() {
+    private fun runModel(stop: Boolean = false) {
+        assert(isDispatchThread())
         val model = this.model
         if (model != null) {
+            errorOutput.isVisible = false
+            running = true
+            updateButtons()
             thread {
+                var suceeded = false
                 try {
-                    updateButton.isEnabled = false
-                    nextStepButton.isEnabled = false
-                    model.proceed()
+                    suceeded =
+                        if (stop) model.stop()
+                        else model.proceed()
                 } catch (e: Exception) {
-                    errorOutput.text = e.message
-                    errorOutput.isVisible = true
+                    invokeLater {
+                        errorOutput.text = e.message
+                        errorOutput.isVisible = true
+                    }
                 } finally {
-                    updateButton.isEnabled = true
-                    nextStepButton.isEnabled = true
+                    invokeLater {
+                        running = false
+                        done = suceeded
+                    }
                 }
             }
+        }
+    }
+
+    private fun updateButtons() {
+        assert(isDispatchThread())
+        updateAndAbortButton.isEnabled = !running
+        nextStepButton.isEnabled = !running && !done
+
+        if (model != null && !done) {
+            updateAndAbortButton.text = "Abort"
+        } else {
+            updateAndAbortButton.text = "Update"
+
         }
     }
 
@@ -182,7 +219,7 @@ class MainWindow(config: Config,
             weightx = 1.0
         })
 
-        add(updateButton, newConstraint().apply {
+        add(updateAndAbortButton, newConstraint().apply {
             gridx = 2
             gridy = 4
             insets = Insets(10, 10, 10, 4)
@@ -194,7 +231,17 @@ class MainWindow(config: Config,
             insets = Insets(10, 4, 10, 10)
         })
         nextStepButton.isEnabled = false
-        nextStepButton.addActionListener { proceed() }
-        updateButton.addActionListener { instantiateModel() }
+        nextStepButton.addActionListener { runModel() }
+        updateAndAbortButton.addActionListener {
+            val model = this.model
+            if (model != null && !done) {
+                val selected = JOptionPane.showConfirmDialog(this, "Really abort?")
+                if (selected == JOptionPane.YES_OPTION) {
+                    runModel(stop = true)
+                }
+            } else {
+                instantiateModel()
+            }
+        }
     }
 }

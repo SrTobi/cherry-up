@@ -19,8 +19,8 @@ interface Step {
 abstract class UiModel: AutoCloseable {
     var update: () -> Unit = { }
 
-    abstract fun proceed(): Unit
-    abstract fun stop(): Unit
+    abstract fun proceed(): Boolean
+    abstract fun stop(): Boolean
 
     abstract fun listModel(): ListModel<Step>
 }
