@@ -222,24 +222,41 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                 state = BranchState.Analyzing
                 val newSteps = ArrayList<BranchStep>()
                 val branchSetupSteps = repos.map {
+                    val email = it.git.repository.config.getString("user", null, "email")
+                        ?: throw Exception("No user email set for ${it.name}.")
+                    val author = email.split('@').first()
+                    val targetBranchName = "${branchTransition.to}-${author}-cherry-picking/from-${branchTransition.from}"
+                    val originBranchName = "origin/${branchTransition.to}"
+                    val originBranch = it.git.repository.findRef(originBranchName)
+                        ?: throw Exception("Expected to find an upstream branch $originBranchName for ${it.name}")
+
                     PrepareBranch(
                         it,
-                        branchTransition.to,
-                        "origin/${branchTransition.to}",
+                        targetBranchName,
+                        originBranch,
                         BranchSwitchInfo()
                     )
                 }
                 newSteps.addAll(branchSetupSteps)
 
+                branchSetupSteps.forEach {
+                    newSteps.add(FinishBranch(it.repo, it.targetBranchName, it.branchSwitchInfo))
+                }
 
                 steps = newSteps
                 state = BranchState.Analyzed
                 false
             }
             BranchState.Analyzed, BranchState.Running -> {
+                state = BranchState.Running
                 val steps = this.steps
                 require(steps != null)
-                steps.all { it.run() }
+                val done = steps.all { it.run() }
+                if (done) {
+                    state = BranchState.Done
+                    this.steps = listOf()
+                }
+                done
             }
             BranchState.Done -> true
             BranchState.Stopped -> throw Exception("Should not happen")
@@ -252,7 +269,11 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                 true
             }
             BranchState.Running -> {
-                TODO("Not yet implemented")
+                val done = steps!!.all { it.stop() }
+                if (done) {
+                    state = BranchState.Stopped
+                }
+                done
             }
             BranchState.Done -> true
             BranchState.Stopped -> true
@@ -272,11 +293,12 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
 
         private abstract inner class BranchStep: Step {
             abstract fun run(): Boolean
+            abstract fun stop(): Boolean
         }
 
         private inner class PrepareBranch(val repo: Repo,
                                           val targetBranchName: String,
-                                          val originBranchName: String,
+                                          val originBranch: Ref,
                                           val branchSwitchInfo: BranchSwitchInfo): BranchStep() {
             private var progress = StepProgress.None
                 set(value) {
@@ -287,10 +309,7 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
             override fun run(): Boolean {
                 progress = StepProgress.Processing
 
-                val originBranch = repo.git.repository.exactRef(originBranchName)
-                    ?: throw Exception("Expected to find an upstream branch $originBranchName for ${repo.name}")
-
-                val head = repo.git.repository.exactRef(HEAD)
+                val head = repo.git.repository.findRef(HEAD)
                     ?: throw Exception("Couldn't get HEAD??? in ${repo.name}")
                 val currentBranch = head.leaf
 
@@ -299,6 +318,7 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                     repo.git.checkout()
                         .setCreateBranch(true)
                         .setName(targetBranchName)
+                        .setStartPoint(originBranch.name)
                         .call()
                 }
 
@@ -311,7 +331,15 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                 return true
             }
 
-            override fun text(): String = "${repo.name}: Prepare Branch ${targetBranchName}"
+            override fun stop(): Boolean = when(progress) {
+                StepProgress.None, StepProgress.Processing -> {
+                    progress = StepProgress.Stopped
+                    true
+                }
+                StepProgress.Stopped, StepProgress.Done -> true
+            }
+
+            override fun text(): String = "${repo.name}: Prepare Branch $targetBranchName"
             override fun isSection(): Boolean = false
             override fun progress(): StepProgress = progress
         }
@@ -328,12 +356,40 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
             override fun run(): Boolean {
                 progress = StepProgress.Processing
 
+                val originalBranch = branchSwitchInfo.originalBranch
+                require(originalBranch != null)
+                originalBranch.ifPresent {
+                    repo.git.checkout()
+                        .setName(it.name)
+                        .call()
+
+                    repo.git.branchDelete()
+                        .setBranchNames(targetBranchName)
+                        .setForce(true)
+                        .call()
+                }
 
                 progress = StepProgress.Done
                 return true
             }
 
-            override fun text(): String = "${repo.name}: Prepare Branch ${targetBranchName}"
+            override fun stop(): Boolean = when(progress) {
+                StepProgress.None, StepProgress.Processing -> {
+                    if (branchSwitchInfo.originalBranch != null) {
+                        run()
+                    } else {
+                        progress = StepProgress.Stopped
+                        true
+                    }
+                }
+                StepProgress.Stopped, StepProgress.Done -> true
+            }
+
+            override fun text(): String {
+                val postfix =
+                    branchSwitchInfo.originalBranch?.map { "(back to ${it.name})" }?.orElseGet { "" } ?: ""
+                return "${repo.name}: Finalize Branch $targetBranchName$postfix"
+            }
             override fun isSection(): Boolean = false
             override fun progress(): StepProgress = progress
         }

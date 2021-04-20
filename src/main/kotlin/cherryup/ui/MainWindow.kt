@@ -4,10 +4,13 @@ import cherryup.BranchTransition
 import cherryup.Config
 import java.awt.*
 import java.awt.EventQueue.isDispatchThread
+import java.awt.event.WindowAdapter
+import java.awt.event.WindowEvent
 import java.lang.Exception
 import javax.swing.*
 import javax.swing.SwingUtilities.invokeLater
 import kotlin.concurrent.thread
+import kotlin.system.exitProcess
 
 class MainWindow(config: Config,
                  private val createModel: (String, List<BranchTransition>) -> UiModel?): JFrame() {
@@ -15,19 +18,23 @@ class MainWindow(config: Config,
     private val branchFlowInput: JTextField = JTextField(config.branchFlow)
     private val output: JList<Step> = JList()
     private val errorOutput: JLabel = JLabel("")
-    private val updateAndAbortButton: JButton = JButton("Update")
+    private val reloadAndAbortButton: JButton = JButton("Reload")
     private val nextStepButton: JButton = JButton("Run")
 
     private var model: UiModel? = null
         set(value) {
+            field?.close()
             field = value
+            didRunModel = false
             updateButtons()
         }
     private var running: Boolean = false
         set(value) {
+            didRunModel = didRunModel || value
             field = value
             updateButtons()
         }
+    private var didRunModel: Boolean = false
     private var done: Boolean = false
         set(value) {
             field = value
@@ -47,7 +54,6 @@ class MainWindow(config: Config,
 
         val oldModel = model
         if (oldModel != null) {
-            oldModel.close()
             oldModel.update = { }
         }
         done = false
@@ -83,7 +89,7 @@ class MainWindow(config: Config,
     }
 
     override fun dispose() {
-        model?.close()
+        model = null
         super.dispose()
     }
 
@@ -136,13 +142,13 @@ class MainWindow(config: Config,
 
     private fun updateButtons() {
         assert(isDispatchThread())
-        updateAndAbortButton.isEnabled = !running
+        reloadAndAbortButton.isEnabled = !running
         nextStepButton.isEnabled = !running && !done
 
         if (model != null && !done) {
-            updateAndAbortButton.text = "Abort"
+            reloadAndAbortButton.text = "Abort"
         } else {
-            updateAndAbortButton.text = "Update"
+            reloadAndAbortButton.text = "Reload"
 
         }
     }
@@ -150,9 +156,30 @@ class MainWindow(config: Config,
     private fun createUI() {
         title = "CherryUp"
 
-        defaultCloseOperation = EXIT_ON_CLOSE
         setSize(800, 600)
         setLocationRelativeTo(null)
+
+        defaultCloseOperation = DO_NOTHING_ON_CLOSE
+        addWindowListener(object: WindowAdapter() {
+            override fun windowClosing(e: WindowEvent?) {
+                val close =
+                    if (model != null && !done && didRunModel) {
+                        val selected = JOptionPane.showConfirmDialog(
+                            this@MainWindow,
+                            "Process not finished. Consider aborting first.\nReally Exit?",
+                            "Exit?",
+                            JOptionPane.YES_NO_OPTION
+                        )
+                        selected == JOptionPane.YES_OPTION
+                    } else true
+
+                if (close) {
+                    model?.close()
+                    exitProcess(0)
+                }
+            }
+        })
+
 
         contentPane.layout = GridBagLayout()
 
@@ -219,7 +246,7 @@ class MainWindow(config: Config,
             weightx = 1.0
         })
 
-        add(updateAndAbortButton, newConstraint().apply {
+        add(reloadAndAbortButton, newConstraint().apply {
             gridx = 2
             gridy = 4
             insets = Insets(10, 10, 10, 4)
@@ -232,10 +259,10 @@ class MainWindow(config: Config,
         })
         nextStepButton.isEnabled = false
         nextStepButton.addActionListener { runModel() }
-        updateAndAbortButton.addActionListener {
+        reloadAndAbortButton.addActionListener {
             val model = this.model
             if (model != null && !done) {
-                val selected = JOptionPane.showConfirmDialog(this, "Really abort?")
+                val selected = JOptionPane.showConfirmDialog(this, "Really abort?", "Abort?", JOptionPane.YES_NO_OPTION)
                 if (selected == JOptionPane.YES_OPTION) {
                     runModel(stop = true)
                 }
