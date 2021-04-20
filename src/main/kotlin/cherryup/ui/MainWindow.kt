@@ -95,10 +95,13 @@ class MainWindow(config: Config,
 
     private fun parseBranchFlow(value: String): List<BranchTransition> {
         return value
-            .split("->")
-            .map { it.trim() }
-            .windowed(2)
-            .map { BranchTransition(it[0], it[1]) }
+            .split(',')
+            .flatMap { part ->
+                part.split("->")
+                    .map { it.trim() }
+                    .windowed(2)
+                    .map { BranchTransition(it[0], it[1]) }
+            }
     }
 
     private fun updateFromModel() {
@@ -149,8 +152,11 @@ class MainWindow(config: Config,
             reloadAndAbortButton.text = "Abort"
         } else {
             reloadAndAbortButton.text = "Reload"
-
         }
+
+        nextStepButton.text =
+            if (didRunModel) "Continue"
+            else "Run"
     }
 
     private fun createUI() {

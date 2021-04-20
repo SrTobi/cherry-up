@@ -3,9 +3,9 @@ package cherryup
 import cherryup.ui.Step
 import cherryup.ui.StepProgress
 import cherryup.ui.UiModel
+import org.eclipse.jgit.api.CherryPickResult
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.api.ResetCommand
-import org.eclipse.jgit.lib.Constants.HEAD
 import org.eclipse.jgit.lib.Ref
 import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
@@ -13,7 +13,6 @@ import java.nio.file.Path
 import java.util.*
 import javax.swing.DefaultListModel
 import javax.swing.ListModel
-import kotlin.collections.ArrayList
 
 data class Repo(val git: Git, val name: String)
 
@@ -69,7 +68,7 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
     }
 
     private class StashInfo(var hadStash: Optional<RevCommit>? = null)
-    private class BranchSwitchInfo(var originalBranch: Optional<Ref>? = null)
+    private class BranchSwitchInfo(var originalBranch: Optional<String>? = null)
 
     private interface Section {
         fun createSteps(): List<Step>
@@ -225,10 +224,10 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                     val email = it.git.repository.config.getString("user", null, "email")
                         ?: throw Exception("No user email set for ${it.name}.")
                     val author = email.split('@').first()
-                    val targetBranchName = "${branchTransition.to}-${author}-cherry-picking/from-${branchTransition.from}"
-                    val originBranchName = "origin/${branchTransition.to}"
-                    val originBranch = it.git.repository.findRef(originBranchName)
-                        ?: throw Exception("Expected to find an upstream branch $originBranchName for ${it.name}")
+                    val targetBranchName = "${branchTransition.to}-${author}-cherryup/from-${branchTransition.from}"
+                    val originToBranchName = "origin/${branchTransition.to}"
+                    val originBranch = it.git.repository.findRef(originToBranchName)
+                        ?: throw Exception("Expected to find an upstream branch $originToBranchName for ${it.name}")
 
                     PrepareBranch(
                         it,
@@ -239,13 +238,38 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                 }
                 newSteps.addAll(branchSetupSteps)
 
-                branchSetupSteps.forEach {
-                    newSteps.add(FinishBranch(it.repo, it.targetBranchName, it.branchSwitchInfo))
+                val cherryPickSteps = branchSetupSteps.flatMap {
+                    val repo = it.repo
+                    val originFromBranchName = "origin/${branchTransition.from}"
+                    val originFromBranch = repo.git.repository.findRef(originFromBranchName)
+                        ?: throw Exception("Expected to find an upstream branch $originFromBranchName for ${repo.name}")
+                    BranchDiff.diff(repo.git, originFromBranch, it.originToBranch).map {
+                        CherryPick(repo, it)
+                    }
                 }
 
-                steps = newSteps
-                state = BranchState.Analyzed
-                false
+                if (cherryPickSteps.isEmpty()) {
+                    steps = cherryPickSteps
+                    state = BranchState.Done
+                    true
+                } else {
+                    val sortedCherryPickSteps = cherryPickSteps.sortedBy { it.commit.commitTime }
+                    newSteps.addAll(sortedCherryPickSteps)
+
+                    newSteps.add(Wait())
+
+                    branchSetupSteps.forEach {
+                        newSteps.add(Push(it.repo, it.targetBranchName))
+                    }
+
+                    branchSetupSteps.forEach {
+                        newSteps.add(FinishBranch(it.repo, it.targetBranchName, it.branchSwitchInfo))
+                    }
+
+                    steps = newSteps
+                    state = BranchState.Analyzed
+                    false
+                }
             }
             BranchState.Analyzed, BranchState.Running -> {
                 state = BranchState.Running
@@ -254,7 +278,6 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                 val done = steps.all { it.run() }
                 if (done) {
                     state = BranchState.Done
-                    this.steps = listOf()
                 }
                 done
             }
@@ -292,43 +315,55 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
         }
 
         private abstract inner class BranchStep: Step {
+            protected var progress = StepProgress.None
+                set(value) {
+                    field = value
+                    update()
+                }
+
+            final override fun progress(): StepProgress = progress
+            final override fun isSection(): Boolean = false
+
             abstract fun run(): Boolean
             abstract fun stop(): Boolean
         }
 
         private inner class PrepareBranch(val repo: Repo,
                                           val targetBranchName: String,
-                                          val originBranch: Ref,
+                                          val originToBranch: Ref,
                                           val branchSwitchInfo: BranchSwitchInfo): BranchStep() {
-            private var progress = StepProgress.None
-                set(value) {
-                    field = value
-                    update()
-                }
+            override fun run(): Boolean = when(progress) {
+                StepProgress.None, StepProgress.Processing -> {
+                    progress = StepProgress.Processing
 
-            override fun run(): Boolean {
-                progress = StepProgress.Processing
+                    val currentBranch = repo.git.repository.branch
+                        ?: throw Exception("Couldn't get current branch??? in ${repo.name}")
 
-                val head = repo.git.repository.findRef(HEAD)
-                    ?: throw Exception("Couldn't get HEAD??? in ${repo.name}")
-                val currentBranch = head.leaf
+                    val saveBranch =
+                        if (currentBranch != targetBranchName) {
+                            repo.git.checkout()
+                                .setCreateBranch(true)
+                                .setName(targetBranchName)
+                                .setStartPoint(originToBranch.name)
+                                .call()
+                            Optional.of(currentBranch)
+                        } else {
+                            Optional.empty()
+                        }
 
-                branchSwitchInfo.originalBranch = Optional.of(currentBranch)
-                if (currentBranch.name != targetBranchName) {
-                    repo.git.checkout()
-                        .setCreateBranch(true)
-                        .setName(targetBranchName)
-                        .setStartPoint(originBranch.name)
+                    if (branchSwitchInfo.originalBranch == null) {
+                        branchSwitchInfo.originalBranch = saveBranch
+                    }
+
+                    repo.git.reset()
+                        .setMode(ResetCommand.ResetType.HARD)
+                        .setRef(originToBranch.name)
                         .call()
+
+                    progress = StepProgress.Done
+                    true
                 }
-
-                repo.git.reset()
-                    .setMode(ResetCommand.ResetType.HARD)
-                    .setRef(originBranch.name)
-                    .call()
-
-                progress = StepProgress.Done
-                return true
+                StepProgress.Done, StepProgress.Stopped -> true
             }
 
             override fun stop(): Boolean = when(progress) {
@@ -340,19 +375,11 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
             }
 
             override fun text(): String = "${repo.name}: Prepare Branch $targetBranchName"
-            override fun isSection(): Boolean = false
-            override fun progress(): StepProgress = progress
         }
 
         private inner class FinishBranch(val repo: Repo,
                                          val targetBranchName: String,
                                          val branchSwitchInfo: BranchSwitchInfo): BranchStep() {
-            private var progress = StepProgress.None
-                set(value) {
-                    field = value
-                    update()
-                }
-
             override fun run(): Boolean {
                 progress = StepProgress.Processing
 
@@ -360,7 +387,7 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                 require(originalBranch != null)
                 originalBranch.ifPresent {
                     repo.git.checkout()
-                        .setName(it.name)
+                        .setName(it)
                         .call()
 
                     repo.git.branchDelete()
@@ -387,11 +414,123 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
 
             override fun text(): String {
                 val postfix =
-                    branchSwitchInfo.originalBranch?.map { "(back to ${it.name})" }?.orElseGet { "" } ?: ""
+                    branchSwitchInfo.originalBranch?.map { "(back to ${it})" }?.orElseGet { "" } ?: ""
                 return "${repo.name}: Finalize Branch $targetBranchName$postfix"
             }
-            override fun isSection(): Boolean = false
-            override fun progress(): StepProgress = progress
+        }
+
+        private inner class Wait: BranchStep() {
+            private var didWait = false
+
+            override fun run(): Boolean =
+                if (didWait) {
+                    progress = StepProgress.Done
+                    true
+                } else {
+                    didWait = true
+                    false
+                }
+
+            override fun stop(): Boolean = when(progress) {
+                StepProgress.None, StepProgress.Processing -> {
+                    progress = StepProgress.Stopped
+                    true
+                }
+                StepProgress.Stopped, StepProgress.Done -> true
+            }
+
+            override fun text(): String = "-------- Ok? ----------"
+        }
+
+        private inner class Push(val repo: Repo, val targetBranchName: String): BranchStep() {
+            override fun run(): Boolean {
+                // push to branch
+                progress = StepProgress.Done
+                return true
+            }
+
+            override fun stop(): Boolean = when(progress) {
+                StepProgress.None, StepProgress.Processing -> {
+                    progress = StepProgress.Stopped
+                    true
+                }
+                StepProgress.Stopped, StepProgress.Done -> true
+            }
+
+            override fun text(): String = "${repo.name}: Push to origin/${targetBranchName}"
+        }
+
+        private inner class CherryPick(val repo: Repo, val commit: RevCommit): BranchStep() {
+            private var hadMergeConflict = false
+
+            override fun run(): Boolean = when(progress) {
+                StepProgress.None, StepProgress.Processing -> {
+                    progress = StepProgress.Processing
+                    if (!hadMergeConflict) runCherryPicking()
+                    else runContinuing()
+                }
+                StepProgress.Stopped, StepProgress.Done -> true
+            }
+
+            private fun runCherryPicking(): Boolean {
+                val result = repo.git.cherryPick()
+                    .include(commit)
+                    .call()
+                val hash = commit.id.abbreviate(6).name()
+
+                return when (result.status!!) {
+                    CherryPickResult.CherryPickStatus.OK -> {
+                        progress = StepProgress.Done
+                        true
+                    }
+                    CherryPickResult.CherryPickStatus.CONFLICTING -> {
+                        hadMergeConflict = true
+                        throw Exception("Cherry picking $hash has merge conflicts! Please Resolve")
+                    }
+                    CherryPickResult.CherryPickStatus.FAILED -> {
+                        throw Exception("Failed to cherry-pick $hash!")
+                    }
+                }
+            }
+
+            private fun runContinuing(): Boolean {
+                val status = repo.git.status().call()
+                val changedPaths = ArrayList<String>()
+                changedPaths.addAll(status.conflicting)
+                changedPaths.addAll(status.modified)
+                changedPaths.addAll(status.missing)
+                changedPaths.addAll(status.untracked)
+                changedPaths.addAll(status.untrackedFolders)
+
+                if (changedPaths.isNotEmpty()) {
+                    throw Exception(
+                        "Cannot continue cherry picking. Following paths are dirty:\n"
+                            + changedPaths.joinToString("\n")
+                    )
+                } else {
+                    repo.git.commit().setAmend(true).call()
+                    progress = StepProgress.Done
+                    return true
+                }
+            }
+
+            override fun stop(): Boolean = when (progress) {
+                StepProgress.None -> {
+                    progress = StepProgress.Stopped
+                    true
+                }
+                StepProgress.Processing -> {
+                    if (repo.git.status().call().isClean) {
+                        progress = StepProgress.Stopped
+                        true
+                    } else {
+                        throw Exception("Couldn't stop cherry-picking because repo is not clean.")
+                    }
+                }
+                StepProgress.Done, StepProgress.Stopped -> true
+            }
+
+            override fun text(): String = "${repo.name}: Cherry pick ${commit.id.abbreviate(6).name()} - ${commit.shortMessage}"
         }
     }
 }
