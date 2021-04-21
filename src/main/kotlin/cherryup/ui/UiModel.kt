@@ -1,5 +1,6 @@
 package cherryup.ui
 
+import cherryup.Config
 import javax.swing.ListModel
 
 enum class StepProgress {
@@ -18,6 +19,8 @@ interface Step {
 
 abstract class UiModel: AutoCloseable {
     var update: () -> Unit = { }
+
+    abstract val config: Config
 
     abstract fun proceed(): Boolean
     abstract fun stop(): Boolean

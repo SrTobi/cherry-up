@@ -1,6 +1,7 @@
 package cherryup
 
 import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.lib.ObjectId
 import org.eclipse.jgit.lib.Ref
 import org.eclipse.jgit.revwalk.RevCommit
 
@@ -13,9 +14,9 @@ object BranchDiff {
     private fun RevCommit.isMergeCommit(): Boolean =
         this.parentCount > 1
 
-    fun diff(git: Git, from: Ref, to: Ref): List<RevCommit> {
-        val fromLog = git.log().add(from.objectId).call()
-        val toLog = git.log().add(to.objectId).call()
+    fun diff(git: Git, from: ObjectId, to: ObjectId): List<RevCommit> {
+        val fromLog = git.log().add(from).call()
+        val toLog = git.log().add(to).call()
 
         val isInTo = toLog.map { it.toFingerPrint() }.toSet()
         val inFromButNotInTo = fromLog.filterNot { isInTo.contains(it.toFingerPrint()) }

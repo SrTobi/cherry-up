@@ -1,31 +1,28 @@
 package cherryup
 
-import java.nio.file.Path
-import java.nio.file.Paths
 import java.util.prefs.Preferences
 
-data class Config(val startDir: String, val branchFlow: String) {
+data class Config(val startDir: String, val branchFlow: String, val authorFilter: String) {
     companion object Factory {
-        private val startDirKey = "startDir"
-        private val branchFlowKey = "branchFlow"
-        private val defaultProto = Config(System.getProperty("user.dir"), "main -> dev")
+        private const val startDirKey = "startDir"
+        private const val branchFlowKey = "branchFlow"
+        private const val authorFilterKey = "authorFilter"
 
-        fun default(): Config = defaultProto.copy()
+        private val defaultProto = Config(System.getProperty("user.dir"), "main -> dev", "")
 
-        fun defaultConfigPath(): Path =
-            Paths.get(System.getProperty("user.dir")).resolve("cherryUp.cfg")
-
-        fun preferenceNode(): Preferences =
+        private fun preferenceNode(): Preferences =
             Preferences.userRoot().node("cherryUp")
 
         fun save(config: Config, pref: Preferences = preferenceNode()) {
             pref.put(startDirKey, config.startDir)
             pref.put(branchFlowKey, config.branchFlow)
+            pref.put(authorFilterKey, config.authorFilter)
         }
 
         fun load(pref: Preferences = preferenceNode()): Config = Config(
-            pref.get(startDirKey, defaultProto.startDir),
-            pref.get(branchFlowKey, defaultProto.branchFlow)
+            startDir =     pref.get(startDirKey, defaultProto.startDir),
+            branchFlow =   pref.get(branchFlowKey, defaultProto.branchFlow),
+            authorFilter = pref.get(authorFilterKey, defaultProto.authorFilter)
         )
     }
 }

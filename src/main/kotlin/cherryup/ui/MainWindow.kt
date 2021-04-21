@@ -4,6 +4,8 @@ import cherryup.BranchTransition
 import cherryup.Config
 import java.awt.*
 import java.awt.EventQueue.isDispatchThread
+import java.awt.event.AdjustmentEvent
+import java.awt.event.AdjustmentListener
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import java.lang.Exception
@@ -13,9 +15,10 @@ import kotlin.concurrent.thread
 import kotlin.system.exitProcess
 
 class MainWindow(config: Config,
-                 private val createModel: (String, List<BranchTransition>) -> UiModel?): JFrame() {
+                 private val createModel: (List<BranchTransition>, Config) -> UiModel?): JFrame() {
     private val pathInput: JTextField = JTextField(config.startDir)
     private val branchFlowInput: JTextField = JTextField(config.branchFlow)
+    private val authorFilterInput: JTextField = JTextField(config.authorFilter)
     private val output: JList<Step> = JList()
     private val errorOutput: JLabel = JLabel("")
     private val reloadAndAbortButton: JButton = JButton("Reload")
@@ -43,14 +46,19 @@ class MainWindow(config: Config,
 
     init {
         createUI()
-        instantiateModel(config.startDir, config.branchFlow, showErrors = false)
+        instantiateModel(config, showErrors = false)
     }
 
-    private fun instantiateModel(startDir: String = pathInput.text,
-                                 branchFlowString: String = branchFlowInput.text,
+    private fun gatherConfig(): Config = Config(
+        startDir = pathInput.text,
+        branchFlow = branchFlowInput.text,
+        authorFilter = authorFilterInput.text
+    )
+
+    private fun instantiateModel(config: Config = gatherConfig(),
                                  showErrors: Boolean = true) {
         assert(isDispatchThread())
-        Config.save(Config(startDir, branchFlowString))
+        Config.save(config)
 
         val oldModel = model
         if (oldModel != null) {
@@ -60,7 +68,7 @@ class MainWindow(config: Config,
         model = null
         output.model = DefaultListModel()
 
-        val branchFlow = parseBranchFlow(branchFlowString)
+        val branchFlow = parseBranchFlow(config.branchFlow)
 
         if (branchFlow.isEmpty()) {
             if (showErrors) {
@@ -70,7 +78,7 @@ class MainWindow(config: Config,
         }
 
         val newModel = try {
-            createModel(startDir, branchFlow)
+            createModel(branchFlow, config)
         } catch(e: Exception) {
             if (showErrors) {
                 JOptionPane.showMessageDialog(this, e.message, "Error while opening Git", JOptionPane.ERROR_MESSAGE)
@@ -119,6 +127,25 @@ class MainWindow(config: Config,
         assert(isDispatchThread())
         val model = this.model
         if (model != null) {
+            if (!didRunModel && model.config != gatherConfig()) {
+                val options = arrayOf("Run", "Reload", "Cancel")
+                val selected = JOptionPane.showOptionDialog(
+                    this,
+                    "Configuration has changed. Really Run?",
+                    "Run? Consider reload",
+                    JOptionPane.YES_NO_CANCEL_OPTION,
+                    JOptionPane.QUESTION_MESSAGE,
+                    null,
+                    options,
+                    1
+                )
+                when (selected) {
+                    0 -> {}
+                    1 -> return instantiateModel()
+                    2 -> return
+                }
+            }
+
             errorOutput.isVisible = false
             running = true
             updateButtons()
@@ -130,7 +157,7 @@ class MainWindow(config: Config,
                         else model.proceed()
                 } catch (e: Exception) {
                     invokeLater {
-                        errorOutput.text = e.message
+                        errorOutput.text = "<html>${e.message?.replace("\n", "<br />")}"
                         errorOutput.isVisible = true
                     }
                 } finally {
@@ -148,7 +175,7 @@ class MainWindow(config: Config,
         reloadAndAbortButton.isEnabled = !running
         nextStepButton.isEnabled = !running && !done
 
-        if (model != null && !done) {
+        if (model != null && !done && didRunModel) {
             reloadAndAbortButton.text = "Abort"
         } else {
             reloadAndAbortButton.text = "Reload"
@@ -221,10 +248,25 @@ class MainWindow(config: Config,
             weightx = 1.0
         })
 
-        ////////////////// Output //////////////////
-        add(output, newConstraint().apply {
+        add(JLabel("Author Filter"), newConstraint().apply {
             gridx = 0
             gridy = 2
+            fill = GridBagConstraints.HORIZONTAL
+        })
+
+        add(authorFilterInput, newConstraint().apply {
+            gridx = 1
+            gridy = 2
+            gridwidth = 3
+            fill = GridBagConstraints.HORIZONTAL
+            weightx = 1.0
+        })
+
+        ////////////////// Output //////////////////
+        val scrollPane = JScrollPane(output)
+        add(scrollPane, newConstraint().apply {
+            gridx = 0
+            gridy = 3
             gridwidth = 4
             fill = GridBagConstraints.BOTH
             weightx = 1.0
@@ -235,7 +277,7 @@ class MainWindow(config: Config,
         ////////////////// Output //////////////////
         add(errorOutput, newConstraint().apply {
             gridx = 0
-            gridy = 3
+            gridy = 4
             gridwidth = 4
             fill = GridBagConstraints.HORIZONTAL
             weightx = 1.0
@@ -247,27 +289,27 @@ class MainWindow(config: Config,
         ////////////////// Buttons //////////////////
         add(Panel(), newConstraint().apply {
             gridx = 1
-            gridy = 4
+            gridy = 5
             fill = GridBagConstraints.HORIZONTAL
             weightx = 1.0
         })
 
         add(reloadAndAbortButton, newConstraint().apply {
             gridx = 2
-            gridy = 4
+            gridy = 5
             insets = Insets(10, 10, 10, 4)
         })
 
         add(nextStepButton, newConstraint().apply {
             gridx = 3
-            gridy = 4
+            gridy = 5
             insets = Insets(10, 4, 10, 10)
         })
         nextStepButton.isEnabled = false
         nextStepButton.addActionListener { runModel() }
         reloadAndAbortButton.addActionListener {
             val model = this.model
-            if (model != null && !done) {
+            if (model != null && !done && didRunModel) {
                 val selected = JOptionPane.showConfirmDialog(this, "Really abort?", "Abort?", JOptionPane.YES_NO_OPTION)
                 if (selected == JOptionPane.YES_OPTION) {
                     runModel(stop = true)

@@ -6,6 +6,8 @@ import cherryup.ui.UiModel
 import org.eclipse.jgit.api.CherryPickResult
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.api.ResetCommand
+import org.eclipse.jgit.lib.Constants.HEAD
+import org.eclipse.jgit.lib.ObjectId
 import org.eclipse.jgit.lib.Ref
 import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
@@ -13,12 +15,18 @@ import java.nio.file.Path
 import java.util.*
 import javax.swing.DefaultListModel
 import javax.swing.ListModel
+import kotlin.collections.HashMap
 
 data class Repo(val git: Git, val name: String)
 
-class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>): UiModel(), AutoCloseable {
+class CherryUpProcess(val repos: List<Repo>,
+                      branchFlow: List<BranchTransition>,
+                      val authorFilter: String,
+                      override val config: Config): UiModel(), AutoCloseable {
     private val sections = ArrayList<Section>()
     private var curListModel: ListModel<Step> = DefaultListModel()
+
+    private val finishedBranches = HashMap<FinishedBranchKey, ObjectId>()
 
     init {
         val stashInfos = repos.map { StashInfo() }
@@ -51,8 +59,8 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
     override fun listModel(): ListModel<Step> = curListModel
 
     companion object Factory {
-        fun create(paths: Map<String, Path>, branchFlow: List<BranchTransition>): CherryUpProcess {
-            return CherryUpProcess(paths.map { openGit(it.value, it.key) }, branchFlow)
+        fun create(paths: Map<String, Path>, branchFlow: List<BranchTransition>, authorFilter: String, config: Config): CherryUpProcess {
+            return CherryUpProcess(paths.map { openGit(it.value, it.key) }, branchFlow, authorFilter, config)
         }
 
         private fun openGit(path: Path, name: String): Repo {
@@ -67,6 +75,7 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
         }
     }
 
+    private data class FinishedBranchKey(val repoName: String, val branchName: String)
     private class StashInfo(var hadStash: Optional<RevCommit>? = null)
     private class BranchSwitchInfo(var originalBranch: Optional<String>? = null)
 
@@ -240,12 +249,17 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
 
                 val cherryPickSteps = branchSetupSteps.flatMap {
                     val repo = it.repo
-                    val originFromBranchName = "origin/${branchTransition.from}"
-                    val originFromBranch = repo.git.repository.findRef(originFromBranchName)
-                        ?: throw Exception("Expected to find an upstream branch $originFromBranchName for ${repo.name}")
-                    BranchDiff.diff(repo.git, originFromBranch, it.originToBranch).map {
-                        CherryPick(repo, it)
+                    val finishedBranchKey = FinishedBranchKey(repo.name, branchTransition.from)
+                    val fromId = finishedBranches.getOrElse(finishedBranchKey) {
+                        val originFromBranchName = "origin/${branchTransition.from}"
+                        repo.git.repository.findRef(originFromBranchName)?.objectId
+                            ?: throw Exception("Expected to find an upstream branch $originFromBranchName for ${repo.name}")
                     }
+
+                    val lowerCaseAuthorFilter = authorFilter.toLowerCase()
+                    BranchDiff.diff(repo.git, fromId, it.originToBranch.objectId)
+                        .filter { it.authorIdent.toExternalString().toLowerCase().contains(lowerCaseAuthorFilter) }
+                        .map { CherryPick(repo, it) }
                 }
 
                 if (cherryPickSteps.isEmpty()) {
@@ -253,7 +267,8 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                     state = BranchState.Done
                     true
                 } else {
-                    val sortedCherryPickSteps = cherryPickSteps.sortedBy { it.commit.commitTime }
+                    val sortedCherryPickSteps = cherryPickSteps.reversed().sortedBy { it.commit.commitTime }
+
                     newSteps.addAll(sortedCherryPickSteps)
 
                     newSteps.add(Wait())
@@ -442,9 +457,12 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
             override fun text(): String = "-------- Ok? ----------"
         }
 
-        private inner class Push(val repo: Repo, val targetBranchName: String): BranchStep() {
+        private inner class Push(val repo: Repo, val targetBranchName: String, ): BranchStep() {
+            val targetOriginBranchName = "origin/${targetBranchName}"
+
             override fun run(): Boolean {
                 // push to branch
+                finishedBranches[FinishedBranchKey(repo.name, branchTransition.to)] = repo.git.repository.findRef(HEAD).objectId
                 progress = StepProgress.Done
                 return true
             }
@@ -457,7 +475,7 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                 StepProgress.Stopped, StepProgress.Done -> true
             }
 
-            override fun text(): String = "${repo.name}: Push to origin/${targetBranchName}"
+            override fun text(): String = "${repo.name}: Push to $targetOriginBranchName"
         }
 
         private inner class CherryPick(val repo: Repo, val commit: RevCommit): BranchStep() {
@@ -500,7 +518,7 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                 changedPaths.addAll(status.modified)
                 changedPaths.addAll(status.missing)
                 changedPaths.addAll(status.untracked)
-                changedPaths.addAll(status.untrackedFolders)
+                //changedPaths.addAll(status.untrackedFolders)
 
                 if (changedPaths.isNotEmpty()) {
                     throw Exception(
@@ -508,7 +526,14 @@ class CherryUpProcess(val repos: List<Repo>, branchFlow: List<BranchTransition>)
                             + changedPaths.joinToString("\n")
                     )
                 } else {
-                    repo.git.commit().setAmend(true).call()
+                    val headCommit = repo.git.log().setMaxCount(1).call().firstOrNull()
+                        ?: throw Exception("Couldn't get HEAD commit?")
+
+                    repo.git.commit()
+                        .setAmend(true)
+                        .setMessage(headCommit.fullMessage)
+                        .setAuthor(headCommit.authorIdent)
+                        .call()
                     progress = StepProgress.Done
                     return true
                 }
