@@ -4,7 +4,7 @@ plugins {
     kotlin("jvm") version "1.4.32"
 }
 
-group = "me.tobi"
+group = "com.github.srtobi"
 version = "1.0"
 
 repositories {
@@ -23,3 +23,25 @@ tasks.test {
 tasks.withType<KotlinCompile>() {
     kotlinOptions.jvmTarget = "1.8"
 }
+
+tasks.withType<Jar>() {
+    manifest {
+        attributes(
+            "Main-Class" to "cherryup.MainKt"
+        )
+    }
+
+    from({
+        configurations.runtimeClasspath.get()
+            .filter { it.name.endsWith("jar") }
+            .map { zipTree(it) }
+    })
+
+
+    exclude(
+        "META-INF/*.RSA",
+        "META-INF/*.SF",
+        "META-INF/*.DSA"
+    )
+}
+
