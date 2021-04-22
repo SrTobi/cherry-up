@@ -1,7 +1,6 @@
-package cherryup.ui
+package cherryup
 
-import cherryup.CherryUpProcess
-import cherryup.Config
+import cherryup.ui.MainWindow
 import java.awt.EventQueue
 import java.nio.file.Paths
 
