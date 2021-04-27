@@ -21,7 +21,7 @@ data class Repo(val git: Git, val name: String)
 
 class CherryUpProcess(
     val repos: List<Repo>,
-    branchFlow: List<BranchTransition>,
+    branchFlow: BranchFlow,
     val authorFilter: String,
     override val config: Config
 ): UiModel(), AutoCloseable {
@@ -62,7 +62,7 @@ class CherryUpProcess(
 
     companion object Factory {
         fun create(paths: Map<String, Path>,
-                   branchFlow: List<BranchTransition>,
+                   branchFlow: BranchFlow,
                    authorFilter: String,
                    config: Config): CherryUpProcess {
             return CherryUpProcess(paths.map { openGit(it.value, it.key) }, branchFlow, authorFilter, config)

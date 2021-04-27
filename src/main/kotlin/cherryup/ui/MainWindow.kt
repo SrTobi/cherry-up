@@ -1,5 +1,6 @@
 package cherryup.ui
 
+import cherryup.BranchFlow
 import cherryup.BranchTransition
 import cherryup.Config
 import java.awt.*
@@ -15,7 +16,7 @@ import kotlin.concurrent.thread
 import kotlin.system.exitProcess
 
 class MainWindow(config: Config,
-                 private val createModel: (List<BranchTransition>, Config) -> UiModel?): JFrame() {
+                 private val createModel: (BranchFlow, Config) -> UiModel?): JFrame() {
     private val pathInput: JTextField = JTextField(config.startDir)
     private val branchFlowInput: JTextField = JTextField(config.branchFlow)
     private val authorFilterInput: JTextField = JTextField(config.authorFilter)
@@ -68,7 +69,7 @@ class MainWindow(config: Config,
         model = null
         output.model = DefaultListModel()
 
-        val branchFlow = parseBranchFlow(config.branchFlow)
+        val branchFlow = BranchTransition.parseFlow(config.branchFlow)
 
         if (branchFlow.isEmpty()) {
             if (showErrors) {
@@ -99,17 +100,6 @@ class MainWindow(config: Config,
     override fun dispose() {
         model = null
         super.dispose()
-    }
-
-    private fun parseBranchFlow(value: String): List<BranchTransition> {
-        return value
-            .split(',')
-            .flatMap { part ->
-                part.split("->")
-                    .map { it.trim() }
-                    .windowed(2)
-                    .map { BranchTransition(it[0], it[1]) }
-            }
     }
 
     private fun updateFromModel() {
