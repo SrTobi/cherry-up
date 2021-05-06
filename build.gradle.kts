@@ -72,12 +72,14 @@ tasks.withType<Jar> {
         require(!makeVersionBanner().startsWith("<dev>")) { "Package only in correctly annotated version!" }
     }
 
-
     from({
         configurations.runtimeClasspath.get()
             .filter { it.name.endsWith("jar") }
             .map { zipTree(it) }
     })
+
+    archiveFileName.set("cherry-up.jar")
+
     exclude(
         "META-INF/*.RSA",
         "META-INF/*.SF",
