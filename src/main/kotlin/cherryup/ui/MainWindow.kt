@@ -3,6 +3,7 @@ package cherryup.ui
 import cherryup.BranchFlow
 import cherryup.BranchTransition
 import cherryup.Config
+import com.github.srtobi.cherry_up.BuildConfig
 import java.awt.*
 import java.awt.EventQueue.isDispatchThread
 import java.awt.event.AdjustmentEvent
@@ -22,6 +23,7 @@ class MainWindow(config: Config,
     private val authorFilterInput: JTextField = JTextField(config.authorFilter)
     private val output: JList<Step> = JList()
     private val errorOutput: JLabel = JLabel("")
+    private val versionLabel: JLabel = JLabel(BuildConfig.VersionBanner)
     private val reloadAndAbortButton: JButton = JButton("Reload")
     private val nextStepButton: JButton = JButton("Run")
 
@@ -203,6 +205,7 @@ class MainWindow(config: Config,
             }
         })
 
+        BuildConfig.VersionBanner
 
         contentPane.layout = GridBagLayout()
 
@@ -277,6 +280,11 @@ class MainWindow(config: Config,
         errorOutput.isVisible = false
 
         ////////////////// Buttons //////////////////
+        add(versionLabel, newConstraint().apply {
+            gridx = 0
+            gridy = 5
+        })
+
         add(Panel(), newConstraint().apply {
             gridx = 1
             gridy = 5

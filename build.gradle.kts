@@ -1,7 +1,9 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import java.io.ByteArrayOutputStream
 
 plugins {
     kotlin("jvm") version "1.4.32"
+    id("com.github.gmazzo.buildconfig") version "3.0.0"
 }
 
 group = "com.github.srtobi"
@@ -20,24 +22,62 @@ tasks.test {
     useJUnit()
 }
 
-tasks.withType<KotlinCompile>() {
+tasks.withType<KotlinCompile> {
     kotlinOptions.jvmTarget = "1.8"
 }
 
-tasks.withType<Jar>() {
+fun runCmd(vararg args: String): String? {
+    val stdout = ByteArrayOutputStream()
+    val result = exec {
+        commandLine(*args)
+        standardOutput = stdout
+        isIgnoreExitValue = true
+    }
+
+    return if (result.exitValue == 0)
+        stdout.toString("UTF-8").trim()
+    else null
+}
+
+
+fun gitObjHash(objName: String): String =
+    runCmd("git", "rev-parse", "--short", objName) ?: throw Exception("Git object $objName does not exist")
+
+fun tagName(): String = "v${project.version}"
+
+fun makeVersionBanner(): String {
+    val tagName = tagName()
+    val tagHash = gitObjHash(tagName())
+    val versionName =
+        if (tagName == gitObjHash("HEAD")) tagName
+        else "<dev>"
+    return "$versionName ($tagHash)"
+}
+
+buildConfig {
+    buildConfigField("String", "VersionBanner") {
+        "\"${makeVersionBanner()}\""
+    }
+}
+
+tasks.withType<Jar> {
     manifest {
         attributes(
             "Main-Class" to "cherryup.MainKt"
         )
     }
 
+    doFirst {
+        require(runCmd("git", "diff-index", "--quiet", "HEAD") != null) { "Package Jar only in clean directory" }
+        require(!makeVersionBanner().startsWith("<dev>")) { "Package only in correctly annotated version!" }
+    }
+
+
     from({
         configurations.runtimeClasspath.get()
             .filter { it.name.endsWith("jar") }
             .map { zipTree(it) }
     })
-
-
     exclude(
         "META-INF/*.RSA",
         "META-INF/*.SF",
