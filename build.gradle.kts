@@ -49,7 +49,7 @@ fun makeVersionBanner(): String {
     val tagName = tagName()
     val tagHash = gitObjHash(tagName())
     val versionName =
-        if (tagName == gitObjHash("HEAD")) tagName
+        if (tagHash == gitObjHash("HEAD")) tagName
         else "<dev>"
     return "$versionName ($tagHash)"
 }
@@ -68,8 +68,8 @@ tasks.withType<Jar> {
     }
 
     doFirst {
-        require(runCmd("git", "diff-index", "--quiet", "HEAD") != null) { "Package Jar only in clean directory" }
         require(!makeVersionBanner().startsWith("<dev>")) { "Package only in correctly annotated version!" }
+        require(runCmd("git", "diff-index", "--quiet", "HEAD") != null) { "Package Jar only in clean directory" }
     }
 
     from({
