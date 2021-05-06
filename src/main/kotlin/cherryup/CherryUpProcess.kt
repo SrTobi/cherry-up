@@ -568,6 +568,10 @@ class CherryUpProcess(
                 val lastLineContainsCherryPickInf =
                     orgMessage.lines().lastOrNull { it.isNotBlank() }?.startsWith("(cherry") ?: false
                 if (!lastLineContainsCherryPickInf) {
+                    val lastLineContainsText = orgMessage.lines().lastOrNull()?.isNotBlank()?: false
+                    if (lastLineContainsText) {
+                        messageBuilder.appendLine()
+                    }
                     messageBuilder.appendLine()
                 }
                 messageBuilder.append("(cherry picked from commit ${commit.id.name()})")
