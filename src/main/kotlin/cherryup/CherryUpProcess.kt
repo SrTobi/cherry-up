@@ -468,7 +468,7 @@ class CherryUpProcess(
                 StepProgress.Stopped, StepProgress.Done -> true
             }
 
-            override fun text(): String = "-------- Ok? Then push. Branches will be deleted on continue ----------"
+            override fun text(): String = "-------- Ok? Then please push the branches manually. They will be deleted on continue ----------"
         }
 
 //        private inner class Push(val repo: Repo, val targetBranchName: String): BranchStep() {
